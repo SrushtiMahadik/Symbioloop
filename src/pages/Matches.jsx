@@ -1,0 +1,15 @@
+import React, { useEffect, useState } from "react";
+import { Sparkles, BrainCircuit, CircleDot, MapPin, Handshake } from "lucide-react";
+import AppShell from "../components/AppShell"; import Card from "../components/Card"; import PageTitle from "../components/PageTitle"; import { api } from "../api";
+export default function Matches(){
+ const [items,setItems]=useState([]),[busy,setBusy]=useState(true),[error,setError]=useState(""),[notice,setNotice]=useState("");
+ const load=async()=>{setBusy(true);setError("");try{setItems(await api("/api/matches"));}catch(e){setError(e.message);}finally{setBusy(false);}};
+ useEffect(()=>{load();},[]);
+ const connect=async m=>{try{await api("/api/exchanges",{method:"POST",body:JSON.stringify({waste_id:m.waste_id,requirement_id:m.requirement_id,quantity_kg:m.suggested_quantity_kg,notes:"Exchange request created from SymbioLoop match recommendations."})});setNotice("Exchange request created. Open Resource Exchange to track it.");}catch(e){setNotice(e.message);}};
+ return <AppShell><PageTitle title="AI Match Results" subtitle="Explainable rule-based recommendations from current industry listings." action={<button className="primary small" onClick={load}><Sparkles size={16}/> Refresh matches</button>}/>
+ <div className="ai-banner"><BrainCircuit/><div><b>Compatibility matching</b><p>Material compatibility, quality, quantity and location where coordinates are available.</p></div><span>Rule-based</span></div>
+ {notice&&<div className="form-msg ok" role="status">{notice}</div>}{error&&<div className="form-msg error" role="alert">{error}. Please log in and ensure the backend is running.</div>}{busy&&<p className="empty-note">Loading matches…</p>}
+ {!busy&&!items.length&&!error&&<Card title="No compatible matches yet"><p className="empty-note">Add a waste listing from one industry and an open material requirement from a different industry. Matching records must have compatible material types and quality.</p></Card>}
+ <div className="grid-two">{items.map((m,i)=><Card key={`${m.waste_id}-${m.requirement_id}`} title={`${i+1}. ${m.material_type}`} icon={Handshake}><div className="selected-material"><div className="rubber-preview"><CircleDot size={26}/></div><div><b>{m.supplier?.name} → {m.buyer?.name}</b><small><MapPin size={13}/> {m.supplier?.location||"Location not provided"} → {m.buyer?.location||"Location not provided"}</small></div></div><div className="big-score"><span>Compatibility score</span><b>{m.compatibility_score}%</b><i><em style={{width:`${m.compatibility_score}%`}}/></i></div><p><b>Material:</b> {m.material_type}</p><p><b>Suggested quantity:</b> {m.suggested_quantity_kg} kg</p><p><b>Quality:</b> {m.quality_percent}% · <b>Available:</b> {m.available_kg} kg · <b>Required:</b> {m.required_kg} kg</p><ul className="checks">{m.reasons?.map((r,j)=><li key={j}>{r}</li>)}</ul><small className="muted">Score is a transparent rule-based estimate, not a trained AI model.</small><button className="primary wide" onClick={()=>connect(m)}>Request Exchange</button></Card>)}</div>
+ </AppShell>
+}
