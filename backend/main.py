@@ -18,6 +18,7 @@ except ImportError:
     def load_dotenv(*_args, **_kwargs):
         return False
 from sustainability import load_factor_config, build_summary
+from forecasting import build_forecast, month_index
 
 APP_DIR = Path(__file__).resolve().parent
 load_dotenv(APP_DIR / ".env")
@@ -381,48 +382,29 @@ def industrial_data_summary():
     }
 
 @app.get("/api/forecast")
-def forecast(db:Session=Depends(get_db),user:Industry=Depends(current_user),periods:int=Query(3,ge=1,le=12)):
-    # Prefer actual application waste listing history. If empty, use the bundled
-    # synthetic COA records as a clearly-labelled prototype forecast (unit unknown).
-    rows=db.query(WasteListing.created_at,WasteListing.quantity_kg,WasteListing.material_type).all()
-    if rows:
-        grouped={}
-        for dt,qty,mat in rows:
-            key=dt.strftime("%Y-%m"); grouped.setdefault(key,[]).append(qty)
-        history=[{"month":k,"total_quantity_kg":round(sum(v),2),"record_count":len(v)} for k,v in sorted(grouped.items())]
-        recent=[x["total_quantity_kg"] for x in history[-3:]]; avg=sum(recent)/len(recent)
-        now=datetime.utcnow().replace(day=1)
-        predictions=[]
-        for i in range(1,periods+1):
-            month=(now.month-1+i)%12+1; year=now.year+(now.month-1+i)//12
-            predictions.append({"month":f"{year:04d}-{month:02d}","predicted_quantity_kg":round(avg,2),"method":"mean of last up to 3 observed listing months"})
-        return {"method":"baseline moving average from application waste listings","source":"live_application_database","measure":"waste quantity (kg)","note":"Baseline only; not a trained or validated ML forecast.","history":history,"forecast":predictions}
-
-    records=load_synthetic_records()
-    grouped={}
-    for row in records:
-        date_text=row.get("Manufacturing_Date","")
-        qty=numeric(row.get("Quantity_Supplied"))
-        if len(date_text) >= 7 and qty is not None:
-            grouped.setdefault(date_text[:7], []).append(qty)
-    if not grouped:
-        return {"method":"baseline moving average","source":"none","measure":"unknown","note":"No waste listing history or bundled dataset was found.","history":[],"forecast":[]}
-    history=[{"month":k,"total_quantity":round(sum(v),2),"record_count":len(v)} for k,v in sorted(grouped.items())]
-    recent=[x["total_quantity"] for x in history[-3:]]
-    avg=sum(recent)/len(recent)
-    now=datetime.utcnow().replace(day=1)
-    predictions=[]
-    for i in range(1,periods+1):
-        month=(now.month-1+i)%12+1; year=now.year+(now.month-1+i)//12
-        predictions.append({"month":f"{year:04d}-{month:02d}","predicted_quantity":round(avg,2),"method":"mean of last up to 3 synthetic monthly totals"})
-    return {
-        "method":"baseline moving average from bundled synthetic COA dataset",
-        "source":"synthetic_project_dataset",
-        "measure":"quantity supplied (source unit not specified)",
-        "note":"Synthetic demonstration only. Values are not kilograms, and this is not a trained or validated ML forecast.",
-        "history":history,
-        "forecast":predictions
-    }
+def forecast(db:Session=Depends(get_db),user:Industry=Depends(current_user),periods:int=Query(6,ge=1,le=12),source:str=Query("dataset",pattern="^(dataset|database)$"),product:str=Query("all"),fill:str=Query("interpolate",pattern="^(interpolate|zero)$")):
+    """Monthly demand forecast. source=dataset uses the bundled COA records, source=database uses live waste listings."""
+    current=datetime.utcnow().strftime("%Y-%m")
+    products=[]
+    if source=="database":
+        # The current month is still in progress, so it is left out of the history.
+        pairs=[(dt.strftime("%Y-%m"),float(q)) for dt,q in db.query(WasteListing.created_at,WasteListing.quantity_kg).all() if dt and q is not None and dt.strftime("%Y-%m")!=current]
+        measure="waste listed per month (kg)"; note="Built from waste listings created on this platform."
+    else:
+        records=load_synthetic_records()
+        products=sorted({r.get("Product","") for r in records if r.get("Product")})
+        pairs=[]
+        for r in records:
+            if product!="all" and r.get("Product")!=product: continue
+            d=(r.get("Manufacturing_Date") or "")[:7]; q=numeric(r.get("Quantity_Supplied"))
+            if len(d)==7 and q is not None: pairs.append((d,q))
+        measure="quantity supplied per month (unit not specified in source)"
+        note="Synthetic demonstration data. Quantity units are not specified, so values are not labelled as kilograms."
+    result=build_forecast(pairs,periods,fill)
+    if result.get("last_month") and month_index(result["last_month"])<month_index(current)-1:
+        result["warnings"].append(f"The data ends in {result['last_month']}. The forecast starts the month after it, so it may cover months that have already passed.")
+    result.update({"source":"synthetic_project_dataset" if source=="dataset" else "live_application_database","measure":measure,"note":note,"products":products,"product":product,"synthetic":source=="dataset"})
+    return result
 
 @app.get("/api/optimization")
 def optimization(db:Session=Depends(get_db),user:Industry=Depends(current_user),transport_cost_per_km:float=Query(18,ge=0,le=100000)):
@@ -447,7 +429,8 @@ def assistant(data:AssistantIn,db:Session=Depends(get_db),user:Industry=Depends(
         if not top: answer="No compatible listings were found yet. Add available waste and open material requirements from different industries."
         else: answer="Top rule-based matches:\n"+"\n".join([f"{m['material_type']}: {m['supplier']['name']} → {m['buyer']['name']}, {m['suggested_quantity_kg']:g} kg, score {m['compatibility_score']}%." for m in top])
     elif any(k in msg for k in ["forecast","demand","predict"]):
-        f=forecast(db,user,3); answer=f"Forecast method: {f['method']}. Historical months available: {len(f['history'])}. This is a baseline, not a trained AI forecast."
+        f=forecast(db,user,3,"dataset","all","interpolate"); nxt=f["forecast"][0]["value"] if f["forecast"] else None
+        answer=f"Forecast method: {f['method']}. {f['verdict']} Next month: {nxt:g} (synthetic dataset, unit not specified)." if nxt is not None else "No monthly history is available to forecast from yet."
     elif any(k in msg for k in ["sustainability","environment","saved","divert","co2","carbon"]):
         sm=sustainability(db,user,"platform",6); co2=sm["co2"]
         answer=f"Completed exchanges: {sm['completed_exchange_count']}; rubber reused: {sm['total_reused_kg']:g} kg; estimated CO2 avoided: {co2['estimated_saved_kg']:g} kg CO2e ({co2['factor_status']} emission factor). {sm['environmental_note']}"
@@ -511,4 +494,4 @@ def dashboard(db:Session=Depends(get_db),user:Industry=Depends(current_user)):
 
 @app.get("/api/modules")
 def modules():
-    return {"modules":[{"name":"Authentication","status":"implemented"},{"name":"Waste management","status":"implemented"},{"name":"Material requirements","status":"implemented"},{"name":"Rule-based matching","status":"implemented"},{"name":"Exchange workflow","status":"implemented"},{"name":"Baseline forecast","status":"implemented; not trained ML"},{"name":"Cost optimization","status":"estimated; requires coordinates for distances"},{"name":"Assistant","status":"rule-based; no LLM configured"},{"name":"Rubber image classification","status":"requires trained model/dataset"},{"name":"Sustainability","status":"database-derived; CO2 estimate uses a configurable emission factor"}]}
+    return {"modules":[{"name":"Authentication","status":"implemented"},{"name":"Waste management","status":"implemented"},{"name":"Material requirements","status":"implemented"},{"name":"Rule-based matching","status":"implemented"},{"name":"Exchange workflow","status":"implemented"},{"name":"Demand forecast","status":"statistical models with rolling backtest (MAE, RMSE, MAPE)"},{"name":"Cost optimization","status":"estimated; requires coordinates for distances"},{"name":"Assistant","status":"rule-based; no LLM configured"},{"name":"Rubber image classification","status":"requires trained model/dataset"},{"name":"Sustainability","status":"database-derived; CO2 estimate uses a configurable emission factor"}]}
