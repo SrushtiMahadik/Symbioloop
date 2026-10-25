@@ -1,0 +1,14 @@
+import React,{useEffect,useState} from "react";
+import { Link } from "react-router-dom";
+import { useAppState } from "../state/AppState";
+import { Leaf, ClipboardList, Sparkles, Handshake, ArrowRight, BrainCircuit, TrendingUp } from "lucide-react";
+import AppShell from "../components/AppShell";import Stat from "../components/Stat";import WasteList from "../components/WasteList";import Card from "../components/Card";import PageTitle from "../components/PageTitle";import {api,getUser} from "../api";
+export default function Dashboard(){const {waste,connected,dataError}=useAppState();const [data,setData]=useState(null);const [error,setError]=useState("");
+ useEffect(()=>{if(connected)api("/api/dashboard").then(setData).catch(e=>setError(e.message));},[connected,waste.length]);const user=data?.industry||getUser();
+ return <AppShell><PageTitle title={`Welcome${user?.name?`, ${user.name}`:" to SymbioLoop"}`} subtitle="Your rubber resource exchange overview." action={<Link className="primary small" to="/matches"><Sparkles size={16}/> Find Matches</Link>}/>
+ {(error||dataError)&&<div className="form-msg error">{error||dataError}</div>}
+ <div className="stats"><Stat icon={ClipboardList} value={data?.total_waste_listings??waste.length} label="Waste Listings" accent="green"/><Stat icon={Sparkles} value={data?.compatible_matches??"—"} label="Compatible Matches" accent="blue"/><Stat icon={Handshake} value={data?.total_exchanges??"—"} label="Exchange Records" accent="orange"/><Stat icon={Leaf} value={`${data?.completed_exchange_kg??0} kg`} label="Waste Reused (Completed)" accent="teal"/></div>
+ <div className="grid-two"><Card title="Platform status" icon={BrainCircuit}><div className="insight"><div className="insight-icon"><Sparkles/></div><div><b>{connected?"Connected to SymbioLoop API":"Demo / local preview mode"}</b><p>{connected?"Dashboard metrics are loaded from the backend database.":"Register or log in to use database-backed listings, matching and exchange workflows."}</p></div></div><Link to="/forecast" className="outline-btn">View baseline forecast <ArrowRight size={15}/></Link></Card><Card title="Next steps" icon={TrendingUp}><p>For real matching, create listings and requirements from different registered industries.</p><div className="btn-row"><Link to="/waste" className="outline-btn">Add Waste</Link><Link to="/requirement" className="outline-btn">Add Requirement</Link></div></Card></div>
+ <div className="grid-two"><Card title="Your Waste Listings"><WasteList limit={5}/><Link className="viewall" to="/waste">Manage listings</Link></Card><Card title="Project Notes"><p>Matching uses transparent rules; forecasting is a baseline; transport is an estimate. A trained image model and external LLM are not bundled.</p><Link to="/assistant" className="outline-btn">Ask SymbioAI <ArrowRight size={15}/></Link></Card></div>
+ </AppShell>;
+}
